@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import NetworkGraph from './components/NetworkGraph';
-import { NetworkData, GraphData, GraphNode, GraphLink } from './types/network';
+import { GraphData } from './types/network';
 import './App.css';
 
 function App() {
@@ -36,7 +36,6 @@ function App() {
           <div className="stats">
             <span>{data.nodes.length} users</span>
             <span>{data.links.length} connections</span>
-            <span>{data.links.filter(l => l.type === 'mutual').length} mutual connections</span>
           </div>
         )}
       </header>

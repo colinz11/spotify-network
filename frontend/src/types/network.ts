@@ -30,7 +30,6 @@ export interface GraphNode {
 export interface GraphLink {
   source: string | GraphNode;
   target: string | GraphNode;
-  type: 'follower' | 'following' | 'mutual';
   value?: number;
 }
 

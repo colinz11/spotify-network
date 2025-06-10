@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { GraphData, GraphNode, GraphLink } from '../types/network';
+import { GraphData, GraphNode } from '../types/network';
 
 interface NetworkGraphProps {
   data: GraphData;
@@ -8,11 +8,125 @@ interface NetworkGraphProps {
 
 const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [hideLeafNodes, setHideLeafNodes] = useState<boolean>(false);
+  const [showComponents, setShowComponents] = useState<boolean>(false);
   
   // Colin's user ID - the primary node
   const COLIN_USER_ID = "pfy59smofvvr5brx5cjt5sy2l";
+
+    // Function to find all cliques (complete subgraphs) in the graph
+  const findAllCliques = (nodes: any[], links: any[]): Map<number, Set<string>> => {
+    // Build adjacency list (treating all edges as bidirectional)
+    const adjacencyList = new Map<string, Set<string>>();
+    nodes.forEach(node => adjacencyList.set(node.id, new Set()));
+
+    links.forEach(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      adjacencyList.get(sourceId)?.add(targetId);
+      adjacencyList.get(targetId)?.add(sourceId);
+    });
+
+    // Find all maximal cliques using Bron-Kerbosch algorithm (simplified)
+    const cliques = new Map<number, Set<string>>();
+    let cliqueId = 0;
+
+    // Helper function to find cliques recursively
+    const findCliques = (currentClique: Set<string>, candidates: Set<string>, excluded: Set<string>) => {
+      if (candidates.size === 0 && excluded.size === 0) {
+        // Found a maximal clique with 3+ nodes
+        if (currentClique.size >= 3) {
+          cliques.set(cliqueId++, new Set(currentClique));
+        }
+        return;
+      }
+
+      // Choose a pivot to reduce recursive calls
+      const pivot = candidates.size > 0 ? Array.from(candidates)[0] : Array.from(excluded)[0];
+      const pivotNeighbors = adjacencyList.get(pivot) || new Set();
+
+      // For each candidate not connected to pivot
+      Array.from(candidates).forEach(candidate => {
+        if (pivotNeighbors.has(candidate)) return; // Skip if connected to pivot
+        
+        const candidateNeighbors = adjacencyList.get(candidate) || new Set();
+        
+        // New clique includes this candidate
+        const newClique = new Set(currentClique);
+        newClique.add(candidate);
+        
+        // New candidates are current candidates that are neighbors of this candidate
+        const newCandidates = new Set<string>();
+        candidates.forEach(c => {
+          if (candidateNeighbors.has(c)) {
+            newCandidates.add(c);
+          }
+        });
+        
+        // New excluded are current excluded that are neighbors of this candidate
+        const newExcluded = new Set<string>();
+        excluded.forEach(e => {
+          if (candidateNeighbors.has(e)) {
+            newExcluded.add(e);
+          }
+        });
+        
+        // Recurse
+        findCliques(newClique, newCandidates, newExcluded);
+        
+        // Move candidate to excluded
+        candidates.delete(candidate);
+        excluded.add(candidate);
+      });
+    };
+
+    // Start the algorithm with all nodes as candidates
+    const allNodes = new Set(nodes.map(n => n.id));
+    findCliques(new Set(), allNodes, new Set());
+
+    return cliques;
+  };
+
+  // Function to get node clique assignments (multiple cliques per node possible)
+  const getNodeCliqueMemberships = (nodes: any[], links: any[]): {
+    nodeToLargestClique: Map<string, number>,
+    nodeToAllCliques: Map<string, number[]>,
+    allCliques: Map<number, Set<string>>
+  } => {
+    const allCliques = findAllCliques(nodes, links);
+    const nodeToLargestClique = new Map<string, number>();
+    const nodeToAllCliques = new Map<string, number[]>();
+    
+    // For each node, find all cliques it belongs to
+    nodes.forEach(node => {
+      const nodeCliques: number[] = [];
+      allCliques.forEach((cliqueNodes, cliqueId) => {
+        if (cliqueNodes.has(node.id)) {
+          nodeCliques.push(cliqueId);
+        }
+      });
+      
+      if (nodeCliques.length > 0) {
+        nodeToAllCliques.set(node.id, nodeCliques);
+        
+        // Find the largest clique this node belongs to
+        let largestCliqueId = nodeCliques[0];
+        let largestSize = allCliques.get(largestCliqueId)?.size || 0;
+        
+        nodeCliques.forEach(cliqueId => {
+          const cliqueSize = allCliques.get(cliqueId)?.size || 0;
+          if (cliqueSize > largestSize) {
+            largestSize = cliqueSize;
+            largestCliqueId = cliqueId;
+          }
+        });
+        
+        nodeToLargestClique.set(node.id, largestCliqueId);
+      }
+    });
+    
+    return { nodeToLargestClique, nodeToAllCliques, allCliques };
+  };
 
   // Function to process network data and optionally hide leaf nodes
   const processNetworkData = (originalData: GraphData, hideLeaves: boolean): GraphData => {
@@ -20,22 +134,56 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       return originalData;
     }
 
-    // Count connections for each node
-    const connectionCounts = new Map<string, number>();
-    originalData.nodes.forEach(node => {
-      connectionCounts.set(node.id, 0);
-    });
-
+    // First, analyze bidirectional relationships to get accurate connection counts
+    const edgeMap = new Map<string, {source: string, target: string}>();
+    const bidirectionalPairs = new Set<string>();
+    
+    // Create edge map
     originalData.links.forEach(link => {
       const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
       const targetId = typeof link.target === 'string' ? link.target : link.target.id;
-      connectionCounts.set(sourceId, (connectionCounts.get(sourceId) || 0) + 1);
-      connectionCounts.set(targetId, (connectionCounts.get(targetId) || 0) + 1);
+      const edgeKey = `${sourceId}->${targetId}`;
+      const reverseKey = `${targetId}->${sourceId}`;
+      
+      edgeMap.set(edgeKey, {source: sourceId, target: targetId});
+      
+      // Check if reverse edge exists
+      if (edgeMap.has(reverseKey)) {
+        // Mark this pair as bidirectional
+        const pairKey = [sourceId, targetId].sort().join('<->');
+        bidirectionalPairs.add(pairKey);
+      }
     });
 
-    // Identify leaf nodes (nodes with only 1 connection, excluding Colin)
+    // Count unique connections (treating bidirectional as one connection)
+    const connectionCounts = new Map<string, Set<string>>();
+    originalData.nodes.forEach(node => {
+      connectionCounts.set(node.id, new Set());
+    });
+
+    const processedPairs = new Set<string>();
+    originalData.links.forEach(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      const pairKey = [sourceId, targetId].sort().join('<->');
+      
+      // Skip if we've already processed this bidirectional pair
+      if (bidirectionalPairs.has(pairKey) && processedPairs.has(pairKey)) {
+        return;
+      }
+      
+      // Add connection for both nodes
+      connectionCounts.get(sourceId)?.add(targetId);
+      connectionCounts.get(targetId)?.add(sourceId);
+      
+      if (bidirectionalPairs.has(pairKey)) {
+        processedPairs.add(pairKey);
+      }
+    });
+
+    // Identify leaf nodes (nodes with only 1 unique connection, excluding Colin)
     const leafNodes = originalData.nodes.filter(node => 
-      node.id !== COLIN_USER_ID && (connectionCounts.get(node.id) || 0) <= 1
+      node.id !== COLIN_USER_ID && (connectionCounts.get(node.id)?.size || 0) <= 1
     );
 
     if (leafNodes.length === 0) {
@@ -52,7 +200,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
 
     // Filter out leaf nodes and add condensed node
     const filteredNodes = originalData.nodes.filter(node => 
-      node.id === COLIN_USER_ID || (connectionCounts.get(node.id) || 0) > 1
+      node.id === COLIN_USER_ID || (connectionCounts.get(node.id)?.size || 0) > 1
     );
     const newNodes = [...filteredNodes, condensedNode];
 
@@ -68,7 +216,6 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       filteredLinks.push({
         source: COLIN_USER_ID,
         target: 'CONDENSED_LEAVES',
-        type: 'following',
         value: 1
       });
     }
@@ -90,8 +237,82 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
 
     // Process data based on hideLeafNodes setting
     let processedData = processNetworkData(data, hideLeafNodes);
-    const links = processedData.links.map(d => ({ ...d }));
+    const originalLinks = processedData.links.map(d => ({ ...d }));
     const nodes = processedData.nodes.map(d => ({ ...d }));
+
+    // Analyze edges to determine bidirectional vs unidirectional
+    const edgeMap = new Map<string, {source: string, target: string}>();
+    const bidirectionalPairs = new Set<string>();
+    
+    // Create edge map
+    originalLinks.forEach(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      const edgeKey = `${sourceId}->${targetId}`;
+      const reverseKey = `${targetId}->${sourceId}`;
+      
+      edgeMap.set(edgeKey, {source: sourceId, target: targetId});
+      
+      // Check if reverse edge exists
+      if (edgeMap.has(reverseKey)) {
+        // Mark this pair as bidirectional
+        const pairKey = [sourceId, targetId].sort().join('<->');
+        bidirectionalPairs.add(pairKey);
+      }
+    });
+
+    // Create processed links with direction info
+    const processedPairs = new Set<string>();
+    const links: any[] = [];
+    
+    originalLinks.forEach(link => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      const pairKey = [sourceId, targetId].sort().join('<->');
+      
+      // Skip if we've already processed this bidirectional pair
+      if (bidirectionalPairs.has(pairKey) && processedPairs.has(pairKey)) {
+        return;
+      }
+      
+      const isBidirectional = bidirectionalPairs.has(pairKey);
+      
+      links.push({
+        source: sourceId,
+        target: targetId,
+        bidirectional: isBidirectional,
+        value: 1
+      });
+      
+             if (isBidirectional) {
+         processedPairs.add(pairKey);
+       }
+     });
+
+    // Debug output
+    console.log(`Processed ${links.length} links`);
+
+    // Get clique assignments for coloring (before creating nodes)
+    const cliqueMemberships = showComponents ? getNodeCliqueMemberships(nodes, links) : { 
+      nodeToLargestClique: new Map(), 
+      nodeToAllCliques: new Map(), 
+      allCliques: new Map() 
+    };
+    const { nodeToLargestClique, nodeToAllCliques, allCliques } = cliqueMemberships;
+    const componentColors = [
+      '#FF6B35', // Orange for Colin (will override)
+      '#4ECDC4', // Teal 
+      '#45B7D1', // Sky blue
+      '#F9CA24', // Yellow
+      '#F0932B', // Orange
+      '#EB4D4B', // Red
+      '#6C5CE7', // Purple
+      '#00B894', // Mint green
+      '#FDCB6E', // Light orange
+      '#E17055', // Coral
+      '#81ECEC', // Light teal
+      '#A29BFE'  // Light purple
+    ];
 
     // Find Colin and set his position at center
     const colinNode = nodes.find(n => n.id === COLIN_USER_ID);
@@ -129,24 +350,44 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
 
     svg.call(zoom as any);
 
-    // Define color scheme for different relationship types - more distinct colors
-    const colorScale: Record<string, string> = {
-      'follower': '#E53E3E',      // Bright red - someone follows the target
-      'following': '#38A169',     // Forest green - source follows someone  
-      'mutual': '#3182CE'         // Strong blue - mutual following
-    };
-
-    // No arrow markers needed - using colored lines only
-
-    // Create links - no arrows, just colored lines
+    // Create links with conditional styling for cliques
     const link = g.append("g")
       .attr("class", "links")
       .selectAll("line")
       .data(links)
       .join("line")
-      .attr("stroke", (d: any) => colorScale[d.type])
+      .attr("stroke", (d: any) => {
+        if (!showComponents) return "#666";
+        
+        // Check if both source and target are in the same clique
+        const sourceId = d.source.id || d.source;
+        const targetId = d.target.id || d.target;
+        const sourceComponent = nodeToLargestClique.get(sourceId);
+        const targetComponent = nodeToLargestClique.get(targetId);
+        
+        if (sourceComponent !== undefined && sourceComponent === targetComponent) {
+          // Both nodes are in the same clique - use clique color
+          return componentColors[sourceComponent % componentColors.length];
+        }
+        
+        return "#666"; // Default color for non-clique edges
+      })
       .attr("stroke-opacity", 0.8)
-      .attr("stroke-width", (d: any) => d.type === 'mutual' ? 5 : 3); // Thicker lines for better color visibility
+      .attr("stroke-width", (d: any) => {
+        if (!showComponents) return 2;
+        
+        // Check if both source and target are in the same clique
+        const sourceId = d.source.id || d.source;
+        const targetId = d.target.id || d.target;
+        const sourceComponent = nodeToLargestClique.get(sourceId);
+        const targetComponent = nodeToLargestClique.get(targetId);
+        
+        if (sourceComponent !== undefined && sourceComponent === targetComponent) {
+          return 3; // Thicker lines for clique edges
+        }
+        
+        return 2; // Default thickness
+      });
 
     // Create node groups
     const nodeGroup = g.append("g")
@@ -167,8 +408,8 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
         })
         .on("end", function(event: any, d: any) {
           if (!event.active) simulation.alphaTarget(0);
-          d.fx = null;
-          d.fy = null;
+          // Keep nodes fixed at their dragged position
+          // Don't set fx and fy to null - this allows nodes to stay where dragged
         }) as any);
 
     // Add circles to node groups
@@ -184,6 +425,15 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
         if (d.id === COLIN_USER_ID) return "#FF6B35"; // Orange for Colin
         if (d.id === 'CONDENSED_LEAVES') return "#9E9E9E"; // Gray for condensed node
         
+        // Color by clique if cliques are shown
+        if (showComponents) {
+          const componentId = nodeToLargestClique.get(d.id);
+          if (componentId !== undefined) {
+            return componentColors[componentId % componentColors.length];
+          }
+        }
+        
+        // Default coloring based on connection count
         const total = (d.follower_count || 0) + (d.following_count || 0);
         if (total > 100) return "#1DB954"; // Spotify green for popular users
         if (total > 50) return "#1ED760";  // Lighter green
@@ -217,10 +467,62 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
     // Add hover and click interactions
     nodeGroup
       .on("mouseenter", function(event: any, d: any) {
-        // Highlight connected links
-        link.style("stroke-opacity", (l: any) => 
-          l.source.id === d.id || l.target.id === d.id ? 1 : 0.1
-        );
+        if (showComponents) {
+          // In clique mode: highlight only the biggest clique this node belongs to
+          const hoveredNodeLargestClique = nodeToLargestClique.get(d.id);
+          
+          if (hoveredNodeLargestClique !== undefined) {
+            // Get the clique color
+            const cliqueColor = componentColors[hoveredNodeLargestClique % componentColors.length];
+            
+            // Get all nodes in the largest clique
+            const cliqueNodes = allCliques.get(hoveredNodeLargestClique);
+            
+            if (cliqueNodes) {
+              // Highlight nodes in the clique with the clique color, dim others
+              nodeGroup.select("circle")
+                .style("opacity", (n: any) => cliqueNodes.has(n.id) ? 1 : 0.3)
+                .style("fill", (n: any) => {
+                  if (n.id === COLIN_USER_ID) return "#FF6B35"; // Keep Colin's color
+                  if (n.id === 'CONDENSED_LEAVES') return "#9E9E9E"; // Keep condensed color
+                  return cliqueNodes.has(n.id) ? cliqueColor : null; // Use clique color for clique members
+                });
+              
+              // Highlight edges within the clique with the same color
+              link
+                .style("stroke-opacity", (l: any) => {
+                  const sourceId = l.source.id || l.source;
+                  const targetId = l.target.id || l.target;
+                  
+                  // Check if both nodes are in the hovered clique
+                  if (cliqueNodes.has(sourceId) && cliqueNodes.has(targetId)) {
+                    return 1;
+                  }
+                  return 0.1;
+                })
+                .style("stroke", (l: any) => {
+                  const sourceId = l.source.id || l.source;
+                  const targetId = l.target.id || l.target;
+                  
+                  // Use clique color for edges within the clique
+                  if (cliqueNodes.has(sourceId) && cliqueNodes.has(targetId)) {
+                    return cliqueColor;
+                  }
+                  return null; // Keep original color
+                });
+            }
+          } else {
+            // Node not in any clique - just highlight its direct connections
+            link.style("stroke-opacity", (l: any) => 
+              l.source.id === d.id || l.target.id === d.id ? 1 : 0.1
+            );
+          }
+        } else {
+          // Default mode: highlight connected links
+          link.style("stroke-opacity", (l: any) => 
+            l.source.id === d.id || l.target.id === d.id ? 1 : 0.1
+          );
+        }
         
         // Show label
         d3.select(this).select("text").style("opacity", 1);
@@ -229,29 +531,21 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
         showTooltip(event, d);
       })
       .on("mouseleave", function() {
-        // Reset link opacity
-        link.style("stroke-opacity", 0.8);
+        // Reset all styling
+        nodeGroup.select("circle")
+          .style("opacity", 1)
+          .style("fill", null); // Reset to original fill color
+        link
+          .style("stroke-opacity", 0.8)
+          .style("stroke", null); // Reset to original stroke color
         
         // Hide tooltip
         hideTooltip();
       })
       .on("click", function(event: any, d: any) {
         event.stopPropagation();
-        setSelectedNode(selectedNode?.id === d.id ? null : d);
-        
-        // Toggle label highlighting when clicking a node
-        if (selectedNode?.id === d.id) {
-          labels.style("opacity", 1); // Show all labels normally
-        } else {
-          labels.style("opacity", (node: any) => node.id === d.id ? 1 : 0.4); // Dim other labels
-        }
+        // Clicking nodes now does nothing - components are shown via toggle
       });
-
-    // Click anywhere to deselect
-    svg.on("click", () => {
-      setSelectedNode(null);
-      labels.style("opacity", 1); // Restore all labels to full opacity
-    });
 
     // Update positions on each tick
     simulation.on("tick", () => {
@@ -283,6 +577,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
         .style("opacity", 0);
 
       let tooltipContent;
+      
       if (d.id === COLIN_USER_ID) {
         tooltipContent = `
           <strong>${d.username || d.id}</strong><br/>
@@ -301,7 +596,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
           <strong>${d.username || d.id}</strong><br/>
           Followers: ${d.follower_count || 0}<br/>
           Following: ${d.following_count || 0}<br/>
-          <em>Connected to Colin</em>
+          <em>Connected to network</em>
         `;
       }
         
@@ -322,7 +617,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       d3.select("body").selectAll(".tooltip").remove();
     };
 
-  }, [data, selectedNode, hideLeafNodes]);
+  }, [data, hideLeafNodes, showComponents]);
 
   return (
     <div className="network-container" style={{ width: '100%', height: '100%' }}>
@@ -351,6 +646,17 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
             <span>Hide leaf nodes (single connections)</span>
           </label>
         </div>
+        <div style={{ marginBottom: '15px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={showComponents}
+              onChange={(e) => setShowComponents(e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <span>Show cliques (fully connected groups)</span>
+          </label>
+        </div>
         <div style={{ marginBottom: '10px' }}>
           <strong>Legend:</strong>
         </div>
@@ -367,26 +673,10 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{ 
               width: '20px', 
-              height: '4px', 
-              backgroundColor: '#E53E3E' 
+              height: '2px', 
+              backgroundColor: '#666' 
             }}></div>
-            <span>Follower relationship</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={{ 
-              width: '20px', 
-              height: '4px', 
-              backgroundColor: '#38A169' 
-            }}></div>
-            <span>Following relationship</span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={{ 
-              width: '20px', 
-              height: '4px', 
-              backgroundColor: '#3182CE' 
-            }}></div>
-            <span>Mutual following</span>
+            <span>Connection</span>
           </div>
           {hideLeafNodes && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -402,10 +692,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
           )}
         </div>
         <div style={{ marginTop: '15px', fontSize: '12px', color: '#666' }}>
-          • Colin is fixed at center (orange node)<br/>
-          • All names are shown by default<br/>
           • Hover over nodes to highlight connections<br/>
-          • Click nodes to pin/unpin labels<br/>
           • Drag nodes to reposition<br/>
           • Scroll to zoom, drag to pan
         </div>

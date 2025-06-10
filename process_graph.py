@@ -56,134 +56,31 @@ def process_network_graph():
     
     print(f"Created {len(potential_nodes)} potential nodes")
     
-    # Create directed edges map with source tracking
-    edges = {}
+    # Create simple edges without type tracking
+    edges = set()  # Use set to avoid duplicates
     
-    # Process following relationships to create directed edges
+    # Process following relationships to create edges
     for user in raw_data['users']:
         for following in user['following']:
-            edge_key = f"{user['user_id']}->{following['id']}"
-            edges[edge_key] = {
-                'source': user['user_id'],
-                'target': following['id'],
-                'source_type': 'following'  # Track that this came from a following relationship
-            }
+            edges.add((user['user_id'], following['id']))
     
-    # Process follower relationships to create directed edges (follower -> main user)
+    # Process follower relationships to create edges (follower -> main user)
     for user in raw_data['users']:
         for follower in user['followers']:
-            edge_key = f"{follower['id']}->{user['user_id']}"
-            # Only add if this edge doesn't already exist from following relationships
-            if edge_key not in edges:
-                edges[edge_key] = {
-                    'source': follower['id'],
-                    'target': user['user_id'],
-                    'source_type': 'follower'  # Track that this came from a follower relationship
-                }
+            edges.add((follower['id'], user['user_id']))
     
-    print(f"Created {len(edges)} directed edges")
+    print(f"Created {len(edges)} unique edges")
     
-    # Create links directly from edges, determining type based on source and reciprocity
+    # Convert edges to simple links
     links = []
-    processed_pairs = set()  # Track processed pairs to avoid duplicates
+    for source_id, target_id in edges:
+        links.append({
+            'source': source_id,
+            'target': target_id,
+            'value': 1
+        })
     
-    # For each edge, determine if it's mutual or one-way
-    for edge_key, edge in edges.items():
-        source_id = edge['source']
-        target_id = edge['target']
-        pair_key = tuple(sorted([source_id, target_id]))  # Canonical pair representation
-        
-        # Skip if we've already processed this pair
-        if pair_key in processed_pairs:
-            continue
-            
-        reverse_key = f"{target_id}->{source_id}"
-        
-        if reverse_key in edges:
-            # Both directions exist - check if this should be mutual
-            # Mutual = following edge + follower edge between same people
-            edge_types = {edges[edge_key]['source_type'], edges[reverse_key]['source_type']}
-            
-            if edge_types == {'following', 'follower'}:
-                # This is a true mutual relationship (following + follower)
-                links.append({
-                    'source': source_id,
-                    'target': target_id,
-                    'type': 'mutual',
-                    'value': 1
-                })
-                processed_pairs.add(pair_key)
-            else:
-                # Both are same type, treat as separate one-way relationships
-                # Add the current edge
-                colin_id = "pfy59smofvvr5brx5cjt5sy2l"
-                
-                if edge['source_type'] == 'following':
-                    if source_id == colin_id:
-                        link_type = 'following'
-                    elif target_id == colin_id:
-                        link_type = 'follower'
-                    else:
-                        link_type = 'following'
-                else:  # follower relationship
-                    link_type = 'follower'
-                
-                links.append({
-                    'source': source_id,
-                    'target': target_id,
-                    'type': link_type,
-                    'value': 1
-                })
-                
-                # Add the reverse edge if it hasn't been processed
-                reverse_edge = edges[reverse_key]
-                if reverse_edge['source_type'] == 'following':
-                    if target_id == colin_id:
-                        reverse_link_type = 'following'
-                    elif source_id == colin_id:
-                        reverse_link_type = 'follower'
-                    else:
-                        reverse_link_type = 'following'
-                else:  # follower relationship
-                    reverse_link_type = 'follower'
-                
-                links.append({
-                    'source': target_id,
-                    'target': source_id,
-                    'type': reverse_link_type,
-                    'value': 1
-                })
-                
-                processed_pairs.add(pair_key)
-        else:
-            # This is a one-way relationship
-            colin_id = "pfy59smofvvr5brx5cjt5sy2l"
-            
-            if edge['source_type'] == 'following':
-                if source_id == colin_id:
-                    link_type = 'following'
-                elif target_id == colin_id:
-                    link_type = 'follower'
-                else:
-                    link_type = 'following'
-            else:  # follower relationship
-                link_type = 'follower'
-            
-            links.append({
-                'source': source_id,
-                'target': target_id,
-                'type': link_type,
-                'value': 1
-            })
-            processed_pairs.add(pair_key)
-    
-    print(f"Created {len(links)} links:")
-    mutual_count = sum(1 for link in links if link['type'] == 'mutual')
-    following_count = sum(1 for link in links if link['type'] == 'following')
-    follower_count = sum(1 for link in links if link['type'] == 'follower')
-    print(f"  - {mutual_count} mutual relationships")
-    print(f"  - {following_count} following relationships") 
-    print(f"  - {follower_count} follower relationships")
+    print(f"Created {len(links)} links")
     
     # Find nodes that are connected (appear in at least one link)
     connected_node_ids = set()
@@ -203,9 +100,6 @@ def process_network_graph():
         'metadata': {
             'total_users': len(nodes),
             'total_connections': len(links),
-            'mutual_connections': mutual_count,
-            'following_connections': following_count,
-            'follower_connections': follower_count,
             'processed_from': 'data/network.json'
         }
     }
@@ -222,31 +116,13 @@ def process_network_graph():
     print(f"Graph data written to {output_file}")
     
     # Print some examples for verification
-    print("\nExample relationships:")
-    colin_id = "pfy59smofvvr5brx5cjt5sy2l"
+    print("\nExample connections:")
+    example_links = links[:5]
     
-    # Show examples of each type
-    mutual_links = [link for link in links if link['type'] == 'mutual'][:3]
-    following_links = [link for link in links if link['type'] == 'following'][:2]  
-    follower_links = [link for link in links if link['type'] == 'follower'][:2]
-    
-    print("  Mutual relationships:")
-    for link in mutual_links:
+    for link in example_links:
         source_name = nodes[link['source']]['username']
         target_name = nodes[link['target']]['username']
-        print(f"    {source_name} <-> {target_name} (mutual)")
-    
-    print("  Following relationships:")
-    for link in following_links:
-        source_name = nodes[link['source']]['username']
-        target_name = nodes[link['target']]['username']
-        print(f"    {source_name} -> {target_name} (following)")
-        
-    print("  Follower relationships:")
-    for link in follower_links:
-        source_name = nodes[link['source']]['username']
-        target_name = nodes[link['target']]['username']
-        print(f"    {source_name} -> {target_name} (follower)")
+        print(f"  {source_name} -> {target_name}")
 
 if __name__ == "__main__":
     process_network_graph() 
