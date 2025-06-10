@@ -12,20 +12,6 @@ if [ ! -f "process_graph.py" ]; then
     exit 1
 fi
 
-# Step 1: Process the data (if network.json exists)
-if [ -f "data/network.json" ]; then
-    echo "📊 Processing network data..."
-    python process_graph.py
-    if [ $? -eq 0 ]; then
-        echo "✅ Data processing completed"
-    else
-        echo "❌ Data processing failed"
-        exit 1
-    fi
-else
-    echo "ℹ️  No network.json found, skipping data processing"
-fi
-
 # Step 2: Install frontend dependencies
 echo "📦 Installing frontend dependencies..."
 cd frontend
