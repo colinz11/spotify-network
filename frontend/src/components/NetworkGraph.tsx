@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { GraphData, GraphNode } from '../types/network';
 
@@ -88,7 +88,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
   };
 
   // Function to get node clique assignments (multiple cliques per node possible)
-  const getNodeCliqueMemberships = (nodes: any[], links: any[]): {
+  const getNodeCliqueMemberships = useCallback((nodes: any[], links: any[]): {
     nodeToLargestClique: Map<string, number>,
     nodeToAllCliques: Map<string, number[]>,
     allCliques: Map<number, Set<string>>
@@ -126,7 +126,109 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
     });
     
     return { nodeToLargestClique, nodeToAllCliques, allCliques };
-  };
+  }, []);
+
+  // Function to calculate optimal initial node positions based on clustering
+  const calculateOptimalPositions = useCallback((nodes: any[], links: any[], width: number, height: number, showComponents: boolean) => {
+    const positions = new Map<string, {x: number, y: number}>();
+    
+    if (!showComponents) {
+      // Default: random circular layout around center
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const radius = Math.min(width, height) * 0.3;
+      
+      nodes.forEach((node, index) => {
+        if (node.id === COLIN_USER_ID) {
+          positions.set(node.id, { x: centerX, y: centerY });
+        } else {
+          const angle = (index / nodes.length) * 2 * Math.PI;
+          const nodeRadius = radius + (Math.random() - 0.5) * 100;
+          positions.set(node.id, {
+            x: centerX + Math.cos(angle) * nodeRadius,
+            y: centerY + Math.sin(angle) * nodeRadius
+          });
+        }
+      });
+      
+      return positions;
+    }
+
+    // Get clique memberships for clustering
+    const cliqueMemberships = getNodeCliqueMemberships(nodes, links);
+    const { nodeToLargestClique } = cliqueMemberships;
+    
+    // Group nodes by their largest clique
+    const clusterGroups = new Map<number, string[]>();
+    const unclusteredNodes: string[] = [];
+    
+    nodes.forEach(node => {
+      const cliqueId = nodeToLargestClique.get(node.id);
+      if (cliqueId !== undefined) {
+        if (!clusterGroups.has(cliqueId)) {
+          clusterGroups.set(cliqueId, []);
+        }
+        clusterGroups.get(cliqueId)!.push(node.id);
+      } else {
+        unclusteredNodes.push(node.id);
+      }
+    });
+
+    // Calculate cluster positions
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const clusterRadius = Math.min(width, height) * 0.25;
+    const clusters = Array.from(clusterGroups.entries());
+    
+    // Position Colin at center
+    positions.set(COLIN_USER_ID, { x: centerX, y: centerY });
+    
+    // Position clusters in a circle around the center
+    clusters.forEach(([cliqueId, nodeIds], clusterIndex) => {
+      const clusterAngle = (clusterIndex / clusters.length) * 2 * Math.PI;
+      const clusterCenterX = centerX + Math.cos(clusterAngle) * clusterRadius;
+      const clusterCenterY = centerY + Math.sin(clusterAngle) * clusterRadius;
+      
+      // Get cluster size for internal radius
+      const clusterSize = nodeIds.length;
+      const internalRadius = Math.max(30, Math.sqrt(clusterSize) * 15);
+      
+      // Position nodes within the cluster
+      nodeIds.forEach((nodeId, nodeIndex) => {
+        if (nodeId === COLIN_USER_ID) return; // Colin is already positioned
+        
+        if (clusterSize === 1) {
+          // Single node cluster
+          positions.set(nodeId, { x: clusterCenterX, y: clusterCenterY });
+        } else {
+          // Multiple nodes in cluster - arrange in circle
+          const nodeAngle = (nodeIndex / clusterSize) * 2 * Math.PI;
+          const jitter = (Math.random() - 0.5) * 20; // Add small random offset
+          positions.set(nodeId, {
+            x: clusterCenterX + Math.cos(nodeAngle) * internalRadius + jitter,
+            y: clusterCenterY + Math.sin(nodeAngle) * internalRadius + jitter
+          });
+        }
+      });
+    });
+    
+    // Position unclustered nodes in outer ring
+    if (unclusteredNodes.length > 0) {
+      const outerRadius = clusterRadius * 1.8;
+      unclusteredNodes.forEach((nodeId, index) => {
+        if (nodeId === COLIN_USER_ID) return; // Colin is already positioned
+        
+        const angle = (index / unclusteredNodes.length) * 2 * Math.PI;
+        const jitter = (Math.random() - 0.5) * 50;
+        positions.set(nodeId, {
+          x: centerX + Math.cos(angle) * outerRadius + jitter,
+          y: centerY + Math.sin(angle) * outerRadius + jitter
+        });
+      });
+    }
+    
+    return positions;
+  }, [getNodeCliqueMemberships, COLIN_USER_ID]);
 
   // Function to process network data and optionally hide leaf nodes
   const processNetworkData = (originalData: GraphData, hideLeaves: boolean): GraphData => {
@@ -292,6 +394,9 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
     // Debug output
     console.log(`Processed ${links.length} links`);
 
+    // Calculate optimal initial positions
+    const optimalPositions = calculateOptimalPositions(nodes, links, width, height, showComponents);
+    
     // Get clique assignments for coloring (before creating nodes)
     const cliqueMemberships = showComponents ? getNodeCliqueMemberships(nodes, links) : { 
       nodeToLargestClique: new Map(), 
@@ -314,23 +419,62 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       '#A29BFE'  // Light purple
     ];
 
-    // Find Colin and set his position at center
+    // Apply optimal initial positions to nodes
+    nodes.forEach(node => {
+      const position = optimalPositions.get(node.id);
+      if (position) {
+        node.x = position.x;
+        node.y = position.y;
+      }
+    });
+
+    // Find Colin and set his position at center (fixed)
     const colinNode = nodes.find(n => n.id === COLIN_USER_ID);
     if (colinNode) {
       colinNode.fx = width / 2;
       colinNode.fy = height / 2;
     }
 
-    // Create the force simulation with better spacing
+    // Create the force simulation with clustering-aware settings
     const simulation = d3.forceSimulation(nodes)
       .force("link", d3.forceLink(links)
         .id((d: any) => d.id)
-        .distance(150) // Increased distance for better spacing
-        .strength(0.3)) // Reduced strength for looser connections
-      .force("charge", d3.forceManyBody().strength(-400)) // Stronger repulsion for more spread
-      .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collision", d3.forceCollide().radius(30)) // Larger collision radius
-      .force("radial", d3.forceRadial(200, width / 2, height / 2).strength(0.1)); // Radial force to spread nodes around Colin
+        .distance((d: any) => {
+          // Shorter distances within cliques, longer between different cliques
+          if (!showComponents) return 120;
+          
+          const sourceComponent = nodeToLargestClique.get(d.source.id || d.source);
+          const targetComponent = nodeToLargestClique.get(d.target.id || d.target);
+          
+          if (sourceComponent !== undefined && sourceComponent === targetComponent) {
+            return 80; // Closer within cliques
+          }
+          return 180; // Further between different cliques
+        })
+        .strength((d: any) => {
+          // Stronger connections within cliques
+          if (!showComponents) return 0.3;
+          
+          const sourceComponent = nodeToLargestClique.get(d.source.id || d.source);
+          const targetComponent = nodeToLargestClique.get(d.target.id || d.target);
+          
+          if (sourceComponent !== undefined && sourceComponent === targetComponent) {
+            return 0.8; // Strong attraction within cliques
+          }
+          return 0.1; // Weak attraction between different groups
+        }))
+      .force("charge", d3.forceManyBody().strength((d: any) => {
+        // Reduce repulsion to preserve clustering
+        if (d.id === COLIN_USER_ID) return -600; // Colin repels more
+        return showComponents ? -200 : -300; // Less repulsion in cluster mode
+      }))
+      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.05)) // Weaker center force
+      .force("collision", d3.forceCollide().radius((d: any) => {
+        // Collision based on node size
+        if (d.id === COLIN_USER_ID) return 25;
+        if (d.id === 'CONDENSED_LEAVES') return 20;
+        return 15;
+      }));
 
     const svg = d3.select(svgRef.current)
       .attr("width", width)
@@ -617,7 +761,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       d3.select("body").selectAll(".tooltip").remove();
     };
 
-  }, [data, hideLeafNodes, showComponents, getNodeCliqueMemberships]);
+  }, [data, hideLeafNodes, showComponents, getNodeCliqueMemberships, calculateOptimalPositions]);
 
   return (
     <div className="network-container" style={{ width: '100%', height: '100%' }}>
