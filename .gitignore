@@ -255,7 +255,7 @@ geckodriver.exe
 
 # Data files (uncomment if you don't want to track data)
 data/
-*.json
+#*.json
 # *.csv
 # *.xlsx
 

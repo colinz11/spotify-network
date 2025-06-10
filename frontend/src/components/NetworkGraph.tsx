@@ -298,7 +298,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       nodeToAllCliques: new Map(), 
       allCliques: new Map() 
     };
-    const { nodeToLargestClique, nodeToAllCliques, allCliques } = cliqueMemberships;
+    const { nodeToLargestClique, allCliques } = cliqueMemberships;
     const componentColors = [
       '#FF6B35', // Orange for Colin (will override)
       '#4ECDC4', // Teal 
