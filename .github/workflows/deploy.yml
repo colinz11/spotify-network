@@ -34,7 +34,21 @@ jobs:
         
     - name: Process network data
       run: |
-        python process_graph.py
+        if [ -f "data/network.json" ]; then
+          echo "Processing network data..."
+          python process_graph.py
+        else
+          echo "No network.json found, using existing graph.json"
+        fi
+        
+    - name: Verify graph.json exists
+      run: |
+        if [ ! -f "frontend/public/graph.json" ]; then
+          echo "Error: graph.json not found in frontend/public/"
+          exit 1
+        else
+          echo "graph.json found, size: $(wc -c < frontend/public/graph.json) bytes"
+        fi
         
     - name: Setup Node.js
       uses: actions/setup-node@v4
