@@ -453,7 +453,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       .style("cursor", "pointer");
 
     // Add labels to node groups
-    const labels = nodeGroup.append("text")
+    nodeGroup.append("text")
       .text((d: any) => d.username || d.id)
       .attr("dx", (d: any) => d.id === COLIN_USER_ID ? 25 : 15)
       .attr("dy", 5)
@@ -617,7 +617,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       d3.select("body").selectAll(".tooltip").remove();
     };
 
-  }, [data, hideLeafNodes, showComponents]);
+  }, [data, hideLeafNodes, showComponents, getNodeCliqueMemberships]);
 
   return (
     <div className="network-container" style={{ width: '100%', height: '100%' }}>
