@@ -23,6 +23,19 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+        
+    - name: Install Python dependencies
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Process network data
+      run: |
+        python process_graph.py
+        
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
