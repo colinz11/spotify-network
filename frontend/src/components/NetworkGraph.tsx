@@ -8,8 +8,10 @@ interface NetworkGraphProps {
 
 const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [hideLeafNodes, setHideLeafNodes] = useState<boolean>(false);
+  const [hideLeafNodes, setHideLeafNodes] = useState<boolean>(true);
   const [showComponents, setShowComponents] = useState<boolean>(false);
+  const isInitialRender = useRef<boolean>(true);
+  const currentNodePositions = useRef<Map<string, {x: number, y: number}>>(new Map());
   
   // Colin's user ID - the primary node
   const COLIN_USER_ID = "pfy59smofvvr5brx5cjt5sy2l";
@@ -230,6 +232,58 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
     return positions;
   }, [getNodeCliqueMemberships, COLIN_USER_ID]);
 
+  // Generate proximity-based colors for cliques
+  const generateProximityColors = useCallback((cliques: Map<number, Set<string>>, optimalPositions: Map<string, {x: number, y: number}>) => {
+    const cliqueIds = Array.from(cliques.keys());
+    if (cliqueIds.length === 0) return [];
+    
+    // Calculate clique center positions
+    const cliqueCenters = new Map<number, {x: number, y: number}>();
+    cliqueIds.forEach(cliqueId => {
+      const cliqueNodes = cliques.get(cliqueId);
+      if (cliqueNodes && cliqueNodes.size > 0) {
+        let totalX = 0, totalY = 0, count = 0;
+        cliqueNodes.forEach(nodeId => {
+          const pos = optimalPositions.get(nodeId);
+          if (pos) {
+            totalX += pos.x;
+            totalY += pos.y;
+            count++;
+          }
+        });
+        if (count > 0) {
+          cliqueCenters.set(cliqueId, { x: totalX / count, y: totalY / count });
+        }
+      }
+    });
+    
+    // Sort cliques by spatial proximity (using angle from center)
+    const centerX = window.innerWidth * 0.95 / 2;
+    const centerY = window.innerHeight * 0.8 / 2;
+    
+    const sortedCliques = cliqueIds.sort((a, b) => {
+      const posA = cliqueCenters.get(a);
+      const posB = cliqueCenters.get(b);
+      if (!posA || !posB) return 0;
+      
+      const angleA = Math.atan2(posA.y - centerY, posA.x - centerX);
+      const angleB = Math.atan2(posB.y - centerY, posB.x - centerX);
+      return angleA - angleB;
+    });
+    
+    // Generate colors using HSL for smooth transitions
+    const colors: string[] = [];
+    sortedCliques.forEach((cliqueId, index) => {
+      // Create a color wheel with smooth transitions
+      const hue = (index / sortedCliques.length) * 360;
+      const saturation = 65 + (index % 3) * 10; // Vary saturation slightly
+      const lightness = 50 + (index % 2) * 10;  // Vary lightness slightly
+      colors[cliqueId] = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+    });
+    
+    return colors;
+  }, []);
+
   // Function to process network data and optionally hide leaf nodes
   const processNetworkData = (originalData: GraphData, hideLeaves: boolean): GraphData => {
     if (!hideLeaves) {
@@ -394,8 +448,10 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
     // Debug output
     console.log(`Processed ${links.length} links`);
 
-    // Calculate optimal initial positions
-    const optimalPositions = calculateOptimalPositions(nodes, links, width, height, showComponents);
+    // Calculate optimal initial positions only on first render or data change
+    const optimalPositions = isInitialRender.current 
+      ? calculateOptimalPositions(nodes, links, width, height, showComponents)
+      : currentNodePositions.current;
     
     // Get clique assignments for coloring (before creating nodes)
     const cliqueMemberships = showComponents ? getNodeCliqueMemberships(nodes, links) : { 
@@ -404,27 +460,30 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       allCliques: new Map() 
     };
     const { nodeToLargestClique, allCliques } = cliqueMemberships;
-    const componentColors = [
-      '#FF6B35', // Orange for Colin (will override)
-      '#4ECDC4', // Teal 
-      '#45B7D1', // Sky blue
-      '#F9CA24', // Yellow
-      '#F0932B', // Orange
-      '#EB4D4B', // Red
-      '#6C5CE7', // Purple
-      '#00B894', // Mint green
-      '#FDCB6E', // Light orange
-      '#E17055', // Coral
-      '#81ECEC', // Light teal
-      '#A29BFE'  // Light purple
-    ];
+    
+    const componentColors = showComponents && allCliques.size > 0 
+      ? generateProximityColors(allCliques, optimalPositions)
+      : [
+          '#FF6B35', '#4ECDC4', '#45B7D1', '#F9CA24', '#F0932B', '#EB4D4B', 
+          '#6C5CE7', '#00B894', '#FDCB6E', '#E17055', '#81ECEC', '#A29BFE'
+        ];
 
-    // Apply optimal initial positions to nodes
+    // Apply positions to nodes
     nodes.forEach(node => {
-      const position = optimalPositions.get(node.id);
-      if (position) {
-        node.x = position.x;
-        node.y = position.y;
+      if (isInitialRender.current) {
+        // First render: use optimal positions
+        const position = optimalPositions.get(node.id);
+        if (position) {
+          node.x = position.x;
+          node.y = position.y;
+        }
+      } else {
+        // Subsequent renders: preserve current positions if available
+        const savedPosition = currentNodePositions.current.get(node.id);
+        if (savedPosition) {
+          node.x = savedPosition.x;
+          node.y = savedPosition.y;
+        }
       }
     });
 
@@ -516,7 +575,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
         
         return "#666"; // Default color for non-clique edges
       })
-      .attr("stroke-opacity", 0.8)
+      .attr("stroke-opacity", 0.5)
       .attr("stroke-width", (d: any) => {
         if (!showComponents) return 2;
         
@@ -680,7 +739,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
           .style("opacity", 1)
           .style("fill", null); // Reset to original fill color
         link
-          .style("stroke-opacity", 0.8)
+          .style("stroke-opacity", 0.5)
           .style("stroke", null); // Reset to original stroke color
         
         // Hide tooltip
@@ -701,7 +760,17 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
 
       nodeGroup
         .attr("transform", (d: any) => `translate(${d.x},${d.y})`);
+      
+      // Save current positions
+      nodes.forEach(node => {
+        if (node.x !== undefined && node.y !== undefined) {
+          currentNodePositions.current.set(node.id, { x: node.x, y: node.y });
+        }
+      });
     });
+    
+    // Mark that initial render is complete
+    isInitialRender.current = false;
 
     // Tooltip functions
     function showTooltip(event: any, d: any) {
