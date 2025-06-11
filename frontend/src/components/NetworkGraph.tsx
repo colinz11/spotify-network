@@ -670,6 +670,15 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
     // Add hover and click interactions
     nodeGroup
       .on("mouseenter", function(event: any, d: any) {
+        // Get directly connected nodes
+        const connectedNodeIds = new Set<string>();
+        links.forEach((l: any) => {
+          const sourceId = l.source.id || l.source;
+          const targetId = l.target.id || l.target;
+          if (sourceId === d.id) connectedNodeIds.add(targetId);
+          if (targetId === d.id) connectedNodeIds.add(sourceId);
+        });
+        
         if (showComponents) {
           // In clique mode: highlight only the biggest clique this node belongs to
           const hoveredNodeLargestClique = nodeToLargestClique.get(d.id);
@@ -727,8 +736,17 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
           );
         }
         
-        // Show label
-        d3.select(this).select("text").style("opacity", 1);
+        // Show labels only for hovered node and directly connected nodes
+        nodeGroup.select("text")
+          .style("opacity", (n: any) => {
+            return (n.id === d.id || connectedNodeIds.has(n.id)) ? 1 : 0;
+          });
+        
+        // Dim nodes that are not directly connected
+        nodeGroup.select("circle")
+          .style("opacity", (n: any) => {
+            return (n.id === d.id || connectedNodeIds.has(n.id)) ? 1 : 0.3;
+          });
         
         // Show tooltip
         showTooltip(event, d);
@@ -741,6 +759,10 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
         link
           .style("stroke-opacity", 0.5)
           .style("stroke", null); // Reset to original stroke color
+        
+        // Show all labels again
+        nodeGroup.select("text")
+          .style("opacity", 1);
         
         // Hide tooltip
         hideTooltip();
