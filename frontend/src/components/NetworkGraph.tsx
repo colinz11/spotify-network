@@ -757,7 +757,7 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
           .style("opacity", 1)
           .style("fill", null); // Reset to original fill color
         link
-          .style("stroke-opacity", 0.5)
+          .style("stroke-opacity", 0.3)
           .style("stroke", null); // Reset to original stroke color
         
         // Show all labels again
